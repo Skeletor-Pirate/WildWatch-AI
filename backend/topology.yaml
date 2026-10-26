@@ -1,0 +1,25 @@
+nodes:
+  - id: "node-a"
+    location: "North Boundary, Sector 1"
+    lat: 28.5355
+    lon: 77.3910
+    do_not_push_side: "left"
+    max_deterrent_level: 3
+
+  - id: "node-b"
+    location: "North Boundary, Sector 2"
+    lat: 28.5360
+    lon: 77.3925
+    do_not_push_side: "right"
+    max_deterrent_level: 2
+
+edges:
+  - source: "node-a"
+    target: "node-b"
+    distance_meters: 150
+    typical_travel_time_sec: 120
+  
+  - source: "node-b"
+    target: "node-a"
+    distance_meters: 150
+    typical_travel_time_sec: 120

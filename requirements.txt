@@ -1,0 +1,15 @@
+# Common
+requests>=2.31.0
+PyYAML>=6.0.1
+python-dotenv>=1.0.0
+
+# Backend
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0
+
+# Node (Edge)
+opencv-python>=4.8.0
+ultralytics>=8.2.0
+psutil>=5.9.0
+# Note: RPi.GPIO and picamera2 should be installed via system packages on the actual Raspberry Pi

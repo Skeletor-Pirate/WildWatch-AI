@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-10-26 15:38:49",
+  "model_architecture": "nvidia/llama-3.1-nemotron-70b-instruct",
+  "framework": "NVIDIA NeMo / PEFT LoRA",
+  "training_samples": 100,
+  "epochs": 3,
+  "final_loss": 0.143,
+  "training_history": [
+    {
+      "epoch": 1,
+      "loss": 1.0438,
+      "accuracy": 0.87
+    },
+    {
+      "epoch": 2,
+      "loss": 0.3864,
+      "accuracy": 0.92
+    },
+    {
+      "epoch": 3,
+      "loss": 0.143,
+      "accuracy": 0.97
+    }
+  ],
+  "checkpoint_directory": "C:\\Users\\HP\\app\\nvidiaproject2\\Nvidiaproject\\finetune\\adapters\\nemotron_wildwatch_lora",
+  "status": "CONVERGED_SUCCESSFULLY"
+}

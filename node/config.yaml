@@ -1,0 +1,40 @@
+# WildWatch Node Configuration
+
+node_id: "node-a"
+
+# Edge ML Settings
+model_path: "models/yolov8n.onnx"
+model_size: 320
+target_fps: 5
+
+# Detection Thresholds
+thresholds:
+  default: 0.5
+  person: 0.6
+  elephant: 0.5
+  bear: 0.5
+  cow: 0.45
+  horse: 0.45
+  sheep: 0.45
+
+# Tracking & Triggering
+trigger:
+  min_frames: 3           # Object must be seen in 3 consecutive frames to trigger
+  cooldown_sec: 15        # Minimum time between sending events for the same track
+
+# Spatial / Direction Setup
+direction:
+  boundary_side: "left"   # Which side of the frame is the "protected boundary"
+  approach_growth: 1.1    # Bounding box area growth factor to consider "approaching"
+
+# GPIO Actuators
+gpio:
+  strobe_pin: 17
+  buzzer_pin: 27
+  status_led_pin: 22
+
+# Backend Uplink
+backend:
+  url: "http://localhost:8000"  # Change to http://<NEBIUS_BACKEND_IP>:8000 when deployed
+  poll_interval: 5        # seconds between polling for commands
+  health_interval: 30     # seconds between health heartbeats
