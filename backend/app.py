@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse, FileResponse
+from fastapi.responses import RedirectResponse, FileResponse, StreamingResponse
+import asyncio
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -21,6 +22,7 @@ from verify import verify_event
 from agent import process_verified_event
 from guardrails import check_actions
 import telegram_bot
+import sms_service
 import tools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -34,7 +36,51 @@ app = FastAPI(
 
 DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "dashboard")
 
-# Mount Static Dashboard Files
+# ------------------------------------------------------------------------------
+# Live Edge Tracking Camera MJPEG Streaming Service
+# ------------------------------------------------------------------------------
+latest_feed_frame = None
+latest_frame_id = 0
+
+@app.post("/api/feed/frame")
+async def receive_feed_frame(request: Request):
+    """Receives live HUD tracking frames from edge camera or run_video_test node."""
+    global latest_feed_frame, latest_frame_id
+    body = await request.body()
+    if body:
+        latest_feed_frame = body
+        latest_frame_id += 1
+    return {"status": "ok"}
+
+async def generate_mjpeg_stream():
+    """Generates continuous MJPEG multipart stream for live browser playback (deduplicated, low-latency)."""
+    last_sent_id = -1
+    placeholder = None
+    while True:
+        if latest_feed_frame is not None:
+            if latest_frame_id != last_sent_id:
+                last_sent_id = latest_frame_id
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + latest_feed_frame + b"\r\n")
+            await asyncio.sleep(0.015)
+        else:
+            if placeholder is None:
+                import cv2, numpy as np
+                img = np.zeros((360, 640, 3), dtype=np.uint8)
+                cv2.putText(img, "WILDWATCH AI: AWAITING EDGE CAMERA FEED...", (40, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 120), 2)
+                _, buf = cv2.imencode('.jpg', img)
+                placeholder = buf.tobytes()
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + placeholder + b"\r\n")
+            await asyncio.sleep(0.5)
+
+@app.get("/api/feed/stream")
+@app.get("/video_feed")
+async def stream_live_feed():
+    """Direct MJPEG live stream endpoint for web dashboard & browser players."""
+    return StreamingResponse(
+        generate_mjpeg_stream(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
 if os.path.exists(DASHBOARD_DIR):
     app.mount("/dashboard", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")
 
@@ -116,8 +162,12 @@ async def process_event_pipeline(event_id: str, event_data: dict):
         if action.get("type") == "deterrent":
             target_node = action.get("target_node", event_data.get("node_id"))
             db.queue_command(target_node, action)
-        elif action.get("type") == "alert":
+        elif action.get("type") in ("alert", "sms_alert"):
             telegram_bot.send_telegram_message(action.get("message", "Alert"), event_id=event_id)
+            # Dispatch bilingual SMS alert via Free Textbelt / GSM gateway
+            sms_text = action.get("sms_message") or action.get("message", "WildWatch Alert")
+            sms_res = sms_service.dispatch_sms_alert(sms_text)
+            action["sms_dispatched"] = sms_res
 
     return verification_result, safe_actions
 
@@ -144,13 +194,17 @@ async def simulate_event(sim: SimulationPayload):
     
     db.store_event(event_id, event_data)
     verification_result, safe_actions = await process_event_pipeline(event_id, event_data)
-    
+    prediction = tools.predict_corridor(sim.node_id, sim.direction, sim.approach)
+
     return {
         "status": "ok",
         "event_id": event_id,
         "node_id": sim.node_id,
         "edge_class": sim.species,
         "edge_conf": event_data["edge_conf"],
+        "direction": sim.direction,
+        "approach": sim.approach,
+        "prediction": prediction,
         "verification": verification_result,
         "actions": safe_actions
     }
@@ -239,6 +293,40 @@ async def ask_question(payload: AskPayload):
 
     return {"response": response}
 
+# ------------------------------------------------------------------------------
+# Free SMS Early Warning Endpoints
+# ------------------------------------------------------------------------------
+class SMSTestPayload(BaseModel):
+    species: str = "elephant"
+    node_id: str = "node-A"
+    direction: str = "towards_village"
+    hazard: str = "high"
+    phone: str = ""
+
+@app.get("/api/sms/history")
+async def get_sms_history_endpoint():
+    """Returns recent dispatched SMS alerts and gateway status."""
+    return {
+        "status": "ok",
+        "enabled": sms_service.SMS_ENABLED,
+        "provider": sms_service.SMS_PROVIDER,
+        "key_type": "free_public_tier" if sms_service.SMS_API_KEY == "textbelt" else "custom",
+        "history": sms_service.get_sms_history()
+    }
+
+@app.post("/api/sms/test")
+async def trigger_sms_test(payload: SMSTestPayload):
+    """Triggers an immediate test SMS dispatch via Textbelt free tier / GSM gateway."""
+    sms_text = sms_service.format_sms_message(payload.species, payload.node_id, payload.direction, payload.hazard)
+    recipients = [payload.phone] if payload.phone.strip() else None
+    result = sms_service.dispatch_sms_alert(sms_text, custom_recipients=recipients)
+    return {
+        "status": "ok",
+        "sms_text": sms_text,
+        "result": result
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

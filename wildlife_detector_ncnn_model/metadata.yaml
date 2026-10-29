@@ -1,0 +1,27 @@
+description: Ultralytics wildlife_detector model trained on /content/drive/MyDrive/animal_dataset_yolo/dataset.yaml
+author: Ultralytics
+date: '2026-10-28T01:03:23.195212+05:30'
+version: 8.4.177
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+head: Detect
+batch: 1
+imgsz:
+- 256
+- 256
+names:
+  0: Bird
+  1: Dog
+  2: Cat
+  3: Horse
+  4: Butterfly
+  5: Deer
+  6: Sheep
+  7: Elephant
+args:
+  batch: 1
+  quantize: null
+channels: 3
+end2end: false

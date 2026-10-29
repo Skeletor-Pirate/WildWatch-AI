@@ -39,6 +39,7 @@ function playDeterrentTone(type, level) {
 }
 
 async function fetchEvents() {
+  if (document.hidden) return;
   try {
     const res = await fetch("/api/events");
     if (!res.ok) return;
@@ -51,26 +52,27 @@ async function fetchEvents() {
   }
 }
 
+const THREAT_CLASSES = ["elephant", "leopard", "tiger", "bear", "sloth_bear"];
+const FILTERED_CLASSES = ["cow", "cattle", "dog", "person", "shadow"];
+
+function parseEventData(e) {
+  if (!e) return {};
+  if (typeof e.event_data === "string") {
+    try { return JSON.parse(e.event_data) || {}; } catch { return {}; }
+  }
+  return e.event_data || {};
+}
+
 function updateStats(events) {
   const total = events.length;
-  document.getElementById("statToday").innerText = total > 0 ? total : "18";
-  
-  const threats = events.filter(e => {
-    try {
-      const ed = JSON.parse(e.event_data || "{}");
-      return ["elephant", "leopard", "tiger", "bear", "sloth_bear"].includes(ed.edge_class);
-    } catch { return false; }
-  }).length;
-  document.getElementById("statThreats").innerText = threats > 0 ? threats : "4";
+  const data = events.map(parseEventData);
+  const threats = data.filter(d => THREAT_CLASSES.includes(d.edge_class)).length;
+  const filtered = data.filter(d => FILTERED_CLASSES.includes(d.edge_class)).length;
+  const pct = total > 0 ? Math.round((filtered / total) * 100) : 0;
 
-  const filtered = events.filter(e => {
-    try {
-      const ed = JSON.parse(e.event_data || "{}");
-      return ["cow", "cattle", "dog", "person", "shadow"].includes(ed.edge_class);
-    } catch { return false; }
-  }).length;
-  const filteredPct = total > 0 ? Math.round((filtered / total) * 100) : 83;
-  document.getElementById("statFiltered").innerText = `${filtered > 0 ? filtered : 14} (${filteredPct}%)`;
+  document.getElementById("statToday").innerText = total;
+  document.getElementById("statThreats").innerText = threats;
+  document.getElementById("statFiltered").innerText = `${filtered} (${pct}%)`;
 }
 
 function renderEventTable(events) {
@@ -81,17 +83,15 @@ function renderEventTable(events) {
   }
 
   tbody.innerHTML = events.slice(0, 10).map((e, idx) => {
-    let data = {};
-    try { data = typeof e.event_data === "string" ? JSON.parse(e.event_data) : e.event_data; } catch {}
-    
+    const data = parseEventData(e);
     const timeStr = e.ts ? (e.ts.split("T")[1]?.slice(0, 8) || e.ts) : new Date().toLocaleTimeString();
     const edgeClass = data.edge_class || "unknown";
-    const conf = data.edge_conf ? Math.round(data.edge_conf * 100) + "%" : "85%";
-    
-    const isDanger = ["elephant", "leopard", "tiger", "bear", "sloth_bear"].includes(edgeClass.toLowerCase());
+    const conf = data.edge_conf ? Math.round(data.edge_conf * 100) + "%" : "—";
+
+    const isDanger = THREAT_CLASSES.includes(edgeClass.toLowerCase());
     const isMed = ["wild_boar", "nilgai", "deer", "monkey"].includes(edgeClass.toLowerCase());
-    const hazardBadge = isDanger 
-      ? `<span style="color:#ef4444; font-weight:700;">HIGH</span>` 
+    const hazardBadge = isDanger
+      ? `<span style="color:#ef4444; font-weight:700;">HIGH</span>`
       : (isMed ? `<span style="color:#f59e0b; font-weight:700;">MED</span>` : `<span style="color:#64748b;">NONE</span>`);
 
     return `
@@ -110,15 +110,14 @@ function renderEventTable(events) {
 function inspectEventByIndex(idx) {
   if (!currentEvents[idx]) return;
   const e = currentEvents[idx];
-  let data = {};
-  try { data = typeof e.event_data === "string" ? JSON.parse(e.event_data) : e.event_data; } catch {}
-  
+  const data = parseEventData(e);
+
   displayIncidentDetails({
-    species: data.edge_class || "elephant",
-    edge_conf: data.edge_conf || 0.88,
+    species: data.edge_class || "unknown",
+    edge_conf: data.edge_conf || 0,
     node_id: e.node_id || "node-a",
-    direction: data.direction || "towards_village",
-    approach: data.approach || "closing"
+    direction: data.direction || "unknown",
+    approach: data.approach || "unknown"
   });
 }
 
@@ -190,13 +189,8 @@ async function triggerSimulation(species) {
   badge.style.background = "rgba(118, 185, 0, 0.25)";
   badge.style.color = "#76b900";
 
-  // Flash Threat vector on map
-  const vector = document.getElementById("threatVector");
-  if (species === "elephant" || species === "leopard" || species === "bear") {
-    vector.style.display = "block";
+  if (["elephant", "leopard", "bear"].includes(species)) {
     playDeterrentTone("strobe", 3);
-  } else {
-    vector.style.display = "none";
   }
 
   try {
@@ -243,6 +237,8 @@ function displayIncidentDetails(data) {
   const edgeThumb = document.getElementById("edgeThumb");
   edgeThumb.innerHTML = getThermalCropSvg(data.edge_class || data.species);
 
+  renderThreatVector(data);
+
   const verSpecies = document.getElementById("verifiedSpecies");
   const vcardReason = document.getElementById("vcardReason");
   const hazardBar = document.getElementById("hazardBar");
@@ -286,10 +282,70 @@ function displayIncidentDetails(data) {
     const alertAction = actions.find(a => a.type === "alert");
     if (alertAction) {
       tgMessage.innerText = alertAction.message;
+      const smsPrev = document.getElementById("smsMessagePreview");
+      const smsStatus = document.getElementById("smsLastDispatched");
+      if (smsPrev && alertAction.sms_message) {
+        smsPrev.innerText = alertAction.sms_message;
+      }
+      if (smsStatus) {
+        const prov = alertAction.sms_dispatched?.results?.[0]?.provider || "Textbelt/GSM";
+        smsStatus.innerText = `Dispatched via ${prov}`;
+        smsStatus.style.color = "#10b981";
+      }
     }
   } else {
     planContent.innerHTML = `<div class="empty-state" style="color: var(--emerald);">🛡️ False Alarm Filtered: Zero deterrents needed. Wildlife undisturbed.</div>`;
     tgMessage.innerText = "No alert dispatched. Sighting categorized as non-hazard.";
+    const smsPrev = document.getElementById("smsMessagePreview");
+    if (smsPrev) {
+      smsPrev.innerText = "Non-hazardous observation. SMS alert suppressed to prevent notification fatigue.";
+    }
+  }
+}
+
+async function testSmsAlert() {
+  const btn = document.getElementById("btnTestSms");
+  const smsPrev = document.getElementById("smsMessagePreview");
+  const smsStatus = document.getElementById("smsLastDispatched");
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "⏳ Dispatching...";
+  }
+
+  try {
+    const res = await fetch("/api/sms/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        species: "elephant",
+        node_id: "node-A",
+        direction: "towards_village",
+        hazard: "high"
+      })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (smsPrev && data.sms_text) {
+        smsPrev.innerText = data.sms_text;
+      }
+      if (smsStatus) {
+        const prov = data.result?.results?.[0]?.provider || "Textbelt (Free Tier)";
+        smsStatus.innerText = `Delivered via ${prov}`;
+        smsStatus.style.color = "#10b981";
+      }
+    }
+  } catch (e) {
+    console.error("SMS test error:", e);
+    if (smsStatus) {
+      smsStatus.innerText = "Fallback GSM Broadcast Active";
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = "⚡ Test Free SMS";
+    }
   }
 }
 
@@ -321,16 +377,93 @@ async function handleAskSubmit(evt) {
       const respData = await res.json();
       loadingBubble.innerText = respData.response;
     } else {
-      loadingBubble.innerText = "Tactical AI advisory: Corridor Sector 1 is currently active with recent sightings. Maintain radio silence and check perimeter sensors.";
+      loadingBubble.innerText = `Assistant unavailable (HTTP ${res.status}). Please try again.`;
     }
   } catch (err) {
-    loadingBubble.innerText = "Elephant herd movements were logged near Node-A 40 minutes ago. Strobe level 3 was deployed and successfully redirected the herd away from village fields.";
+    loadingBubble.innerText = "Could not reach the WildWatch backend. Check that the server is running.";
   }
   chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// Predicted-path renderer. Geometry must match the SVG in index.html:
+// forest is on the left, village on the right, Node-A at x=170, Node-B at x=430.
+const NODE_X = { "node-a": 170, "node-b": 430 };
+const NODE_Y = 160;
+
+function renderThreatVector(data) {
+  const vec = document.getElementById("threatVector");
+  const line = document.getElementById("tvLine");
+  const dot = document.getElementById("tvDot");
+  const label = document.getElementById("tvLabel");
+  const pred = data && data.prediction;
+
+  if (!pred) { vec.style.display = "none"; return; }
+
+  const srcX = NODE_X[data.node_id] ?? NODE_X["node-a"];
+  const deterred = (data.actions || []).some(a => a.type === "deterrent");
+  let x2, text, tone;
+
+  if (pred.heading === "retreating_to_forest") {
+    x2 = srcX - 110;                     // points back into the forest
+    tone = "green";
+    text = "Retreating to forest · no deterrent";
+  } else if (pred.next_node && NODE_X[pred.next_node] !== undefined) {
+    const tgtX = NODE_X[pred.next_node];
+    x2 = tgtX - Math.sign(tgtX - srcX) * 30;  // stop short of the target marker
+    tone = deterred ? "red" : "amber";
+    const eta = pred.eta_sec ? ` · ETA ${pred.eta_sec}s` : "";
+    text = `Predicted → ${pred.next_node.toUpperCase()}${eta}`;
+  } else {
+    vec.style.display = "none";
+    return;
+  }
+
+  const x1 = srcX + (Math.sign(x2 - srcX) || -1) * 30;
+  const color = { red: "#ef4444", amber: "#f59e0b", green: "#10b981" }[tone];
+
+  line.setAttribute("x1", x1);
+  line.setAttribute("x2", x2);
+  line.setAttribute("y1", NODE_Y);
+  line.setAttribute("y2", NODE_Y);
+  line.setAttribute("stroke", color);
+  line.setAttribute("marker-end", `url(#arrow-${tone})`);
+
+  dot.setAttribute("cx", (x1 + x2) / 2);
+  dot.setAttribute("cy", NODE_Y);
+  dot.setAttribute("fill", color);
+
+  label.setAttribute("x", (x1 + x2) / 2);
+  label.setAttribute("fill", color);
+  label.textContent = text;
+
+  vec.style.display = "block";
 }
 
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.innerText = text;
   return div.innerHTML;
+}
+
+
+function switchMonitorView(view) {
+  const feed = document.getElementById('feedContainer');
+  const map = document.getElementById('mapContainer');
+  const btnCam = document.getElementById('btnTabCamera');
+  const btnMap = document.getElementById('btnTabMap');
+  const title = document.getElementById('panelTitleText');
+
+  if (view === 'camera') {
+    feed.style.display = 'block';
+    map.style.display = 'none';
+    btnCam.classList.add('active');
+    btnMap.classList.remove('active');
+    if (title) title.innerText = 'Live Edge Tracking Camera Feed';
+  } else {
+    feed.style.display = 'none';
+    map.style.display = 'block';
+    btnCam.classList.remove('active');
+    btnMap.classList.add('active');
+    if (title) title.innerText = 'Corridor Topology & Spatial Map';
+  }
 }

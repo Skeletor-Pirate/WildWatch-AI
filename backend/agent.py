@@ -1,10 +1,13 @@
 import os
+import sys
 import json
 import logging
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
+sys.path.insert(0, os.path.dirname(__file__))
 import tools
+import sms_service
 
 load_dotenv()
 logger = logging.getLogger("NemotronAgent")
@@ -48,7 +51,12 @@ async def process_verified_event(event_id: str, event_data: dict, verification_r
 
     # Topological spatial awareness
     node_status = tools.get_node_status(node_id)
-    next_node = tools.predict_next_node(node_id)
+    prediction = tools.predict_corridor(node_id, direction, approach)
+    next_node = prediction["next_node"]
+    heading = prediction["heading"]
+    eta_sec = prediction["eta_sec"]
+    next_txt = next_node or "none (leaving network)"
+    eta_txt = f"~{eta_sec}s" if eta_sec else "unknown"
     recent_events = tools.get_recent_events(node_id)
 
     client, model_name, provider = get_llm_client()
@@ -81,7 +89,8 @@ async def process_verified_event(event_id: str, event_data: dict, verification_r
                 f"- Threat Assessment: {hazard_level.upper()}\n"
                 f"- Biologist Diagnosis: {vlm_reason}\n"
                 f"- Movement Vector: {direction} | Spatial Approach: {approach}\n"
-                f"- Downstream Node: {next_node}\n"
+                f"- Predicted Corridor: {heading} -> {next_txt} (ETA {eta_txt}, confidence {prediction['confidence']:.2f})\n"
+                f"- Safety Constraint: {'DO NOT deter (animal retreating to forest)' if heading == 'retreating_to_forest' else 'deterrents permitted only if animal is not retreating'}\n"
                 f"- Recent Node History: {len(recent_events)} sightings in last 2 hours\n\n"
                 "Formulate the optimal tactical action plan:"
             )
@@ -109,8 +118,7 @@ async def process_verified_event(event_id: str, event_data: dict, verification_r
 
     # High-Fidelity NVIDIA Nemotron Rule Engine (Simulated Mode)
     actions = []
-    
-    # Hindi name translations
+
     hindi_species = {
         "elephant": "हाथी (Elephant)",
         "leopard": "तेंदुआ (Leopard)",
@@ -121,66 +129,78 @@ async def process_verified_event(event_id: str, event_data: dict, verification_r
         "nilgai": "नीलगाय (Nilgai)",
         "deer": "हिरण (Deer)",
         "monkey": "बंदर (Monkey)",
-        "cattle": "मवेशी (Cattle)"
+        "cattle": "मवेशी (Cattle)",
     }.get(species.lower(), species)
 
+    # Deterrents only push an animal that is actually heading toward the village side.
+    # Retreating animals get no deterrent (anti-trap rule), and an unknown heading
+    # gets alerts only, never a pre-emptive strobe at a neighbouring node.
+    heading_to_village = heading == "towards_village"
+    retreating = heading == "retreating_to_forest"
+    strobe_target = next_node or node_id
+
+    prediction_line = f"Predicted corridor: {heading.replace('_', ' ')} -> {next_txt}, ETA {eta_txt}."
+
     if hazard_level == "high":
-        # Dangerous predator or elephant moving towards boundary
-        target_deterrent_node = next_node if next_node != "node_unknown" else node_id
+        if heading_to_village:
+            actions.append({
+                "type": "deterrent", "action": "strobe", "level": 3,
+                "target_node": strobe_target,
+                "reason": f"Strobe L3 at {strobe_target} to divert {species} from the settlement path.",
+            })
+            actions.append({
+                "type": "deterrent", "action": "sound", "level": 2,
+                "target_node": node_id,
+                "reason": "Acoustic deterrent to discourage forward movement.",
+            })
+        elif not retreating:
+            # Heading unknown: local warning only, never a push toward a neighbouring node.
+            actions.append({
+                "type": "deterrent", "action": "strobe", "level": 2,
+                "target_node": node_id,
+                "reason": f"Local strobe L2 at {node_id}; heading not yet confirmed.",
+            })
+        sms_text = sms_service.format_sms_message(species, node_id, direction, "high")
         actions.append({
-            "type": "deterrent",
-            "action": "strobe",
-            "level": 3,
-            "target_node": target_deterrent_node,
-            "reason": f"High intensity strobe deployed at {target_deterrent_node} to divert {species} from settlement path."
-        })
-        actions.append({
-            "type": "deterrent",
-            "action": "sound",
-            "level": 2,
-            "target_node": node_id,
-            "reason": "Acoustic deterrent active to discourage forward movement."
-        })
-        actions.append({
-            "type": "alert",
-            "hazard": "high",
+            "type": "alert", "hazard": "high",
             "message": (
                 f"🚨 CRITICAL WILDLIFE ALERT [{node_id.upper()}]\n"
-                f"Verified: {species.upper()} moving {direction} ({approach}).\n"
-                f"Predicted corridor towards {next_node}.\n"
-                f"Actions: Strobe Level 3 & Sound Deterrents triggered at forest border.\n\n"
-                f"📢 चेतावनी: {node_id.upper()} के पास {hindi_species} देखा गया है। वन मार्ग से दूर रहें और सुरक्षित स्थान पर रहें।"
-            )
+                f"Verified: {species.upper()} ({direction}, {approach}).\n"
+                f"{prediction_line}\n"
+                + ("Actions: Strobe L3 & sound deterrents triggered at forest border.\n\n"
+                   if heading_to_village else
+                   "No deterrent fired: animal is retreating to forest.\n\n")
+                + f"📢 चेतावनी: {node_id.upper()} के पास {hindi_species} देखा गया है। वन मार्ग से दूर रहें और सुरक्षित स्थान पर रहें।"
+            ),
+            "sms_message": sms_text
         })
     elif hazard_level == "medium":
+        if not retreating:
+            actions.append({
+                "type": "deterrent", "action": "sound", "level": 1,
+                "target_node": node_id,
+                "reason": f"Mild acoustic deterrent pulse for {species}.",
+            })
+        sms_text = sms_service.format_sms_message(species, node_id, direction, "medium")
         actions.append({
-            "type": "deterrent",
-            "action": "sound",
-            "level": 1,
-            "target_node": node_id,
-            "reason": f"Mild acoustic deterrent pulse for {species}."
-        })
-        actions.append({
-            "type": "alert",
-            "hazard": "medium",
+            "type": "alert", "hazard": "medium",
             "message": (
                 f"⚠️ CAUTION NOTICE [{node_id.upper()}]: {species.capitalize()} detected near boundary.\n"
-                f"Movement: {direction}. Mild acoustic deterrent active.\n\n"
+                f"Movement: {direction}. {prediction_line}\n\n"
                 f"📢 सूचना: {node_id.upper()} पर {hindi_species} देखा गया है। सतर्क रहें।"
-            )
+            ),
+            "sms_message": sms_text
         })
     elif hazard_level == "low":
+        if not retreating:
+            actions.append({
+                "type": "deterrent", "action": "strobe", "level": 1,
+                "target_node": node_id,
+                "reason": "Low-intensity beacon active.",
+            })
         actions.append({
-            "type": "deterrent",
-            "action": "strobe",
-            "level": 1,
-            "target_node": node_id,
-            "reason": "Low-intensity beacon active."
-        })
-        actions.append({
-            "type": "alert",
-            "hazard": "low",
-            "message": f"ℹ️ INFO: Low-hazard animal ({species}) observed at {node_id}. Logged for wildlife census."
+            "type": "alert", "hazard": "low",
+            "message": f"ℹ️ INFO: Low-hazard animal ({species}) observed at {node_id}. Logged for wildlife census.",
         })
     else:
         logger.info(f"[Nemotron Agent] No action needed for benign observation ({species}).")
